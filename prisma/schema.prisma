@@ -1,0 +1,498 @@
+// Portal de Gestión Documental de Contratistas
+// Modelo relacional. Los documentos NUNCA se guardan aquí: residen en SharePoint.
+// PostgreSQL almacena metadatos, autorizaciones, historial, auditoría y referencias.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ───────────────────────────── Enumeraciones ─────────────────────────────
+
+enum RoleKey {
+  ADMIN
+  CONTRACTOR
+  VIEWER
+}
+
+enum UserStatus {
+  PENDING_APPROVAL
+  INVITATION_SENT
+  ACTIVE
+  SUSPENDED
+  REJECTED
+}
+
+enum IdentityType {
+  MEMBER // Cuenta de la organización
+  GUEST // Invitado B2B
+  UNKNOWN
+}
+
+/// Entorno al que pertenece un registro operativo. Una base de datos solo puede
+/// servir a un entorno (ver SystemSetting "system.environment").
+enum DataEnvironment {
+  DEMO
+  PRODUCTION
+}
+
+enum ProjectStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum AccessRequestStatus {
+  PENDING
+  INFO_REQUESTED
+  APPROVED
+  REJECTED
+}
+
+enum InvitationStatus {
+  SENT
+  FAILED
+  REDEEMED
+}
+
+enum FolderOperationType {
+  CREATE
+  RENAME
+  DELETE
+}
+
+enum OperationResult {
+  SUCCESS
+  FAILURE
+}
+
+enum UploadOperationStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  PARTIAL
+  FAILED
+  CANCELLED
+}
+
+enum UploadFileStatus {
+  PENDING
+  IN_PROGRESS
+  SUCCESS
+  ERROR
+  CANCELLED
+}
+
+enum ConflictBehavior {
+  FAIL
+  REPLACE
+  RENAME
+}
+
+enum AuditResult {
+  SUCCESS
+  FAILURE
+  DENIED
+}
+
+enum AuthMethod {
+  ENTRA_ID
+  DEMO
+}
+
+// ───────────────────────────── Identidad y acceso ─────────────────────────────
+
+model Role {
+  key         RoleKey @id
+  name        String
+  description String
+  users       User[]
+
+  @@map("roles")
+}
+
+model Company {
+  id                     String            @id @default(uuid()) @db.Uuid
+  name                   String            @unique
+  taxId                  String?           @map("tax_id")
+  contactEmail           String?           @map("contact_email")
+  notes                  String?
+  /// Carpeta de SharePoint asignada a la empresa contratista (opcional).
+  sharePointFolderItemId String?           @map("sharepoint_folder_item_id")
+  sharePointFolderPath   String?           @map("sharepoint_folder_path")
+  createdById            String?           @map("created_by_id") @db.Uuid
+  createdAt              DateTime          @default(now()) @map("created_at")
+  updatedAt              DateTime          @updatedAt @map("updated_at")
+  users                  User[]
+  locations              ProjectLocation[]
+
+  @@map("companies")
+}
+
+model User {
+  id               String       @id @default(uuid()) @db.Uuid
+  /// Correo en minúsculas. Dato inicial de identificación, nunca prueba de identidad.
+  email            String       @unique
+  fullName         String       @map("full_name")
+  phone            String?
+  companyId        String?      @map("company_id") @db.Uuid
+  company          Company?     @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  roleKey          RoleKey      @default(CONTRACTOR) @map("role_key")
+  role             Role         @relation(fields: [roleKey], references: [key])
+  status           UserStatus   @default(PENDING_APPROVAL)
+  identityType     IdentityType @default(UNKNOWN) @map("identity_type")
+  /// Identificadores estables de Microsoft Entra ID (tid + oid).
+  entraTenantId    String?      @map("entra_tenant_id")
+  entraObjectId    String?      @map("entra_object_id")
+  identityBoundAt  DateTime?    @map("identity_bound_at")
+  authorizedById   String?      @map("authorized_by_id") @db.Uuid
+  authorizedBy     User?        @relation("UserAuthorizedBy", fields: [authorizedById], references: [id], onDelete: SetNull)
+  authorizedUsers  User[]       @relation("UserAuthorizedBy")
+  authorizedAt     DateTime?    @map("authorized_at")
+  statusChangedAt  DateTime?    @map("status_changed_at")
+  statusChangedById String?     @map("status_changed_by_id") @db.Uuid
+  statusReason     String?      @map("status_reason")
+  lastLoginAt      DateTime?    @map("last_login_at")
+  createdById      String?      @map("created_by_id") @db.Uuid
+  createdAt        DateTime     @default(now()) @map("created_at")
+  updatedAt        DateTime     @updatedAt @map("updated_at")
+
+  projects         UserProject[]  @relation("UserProjectUser")
+  grantedProjects  UserProject[]  @relation("UserProjectGrantedBy")
+  sessions         Session[]
+  invitations      Invitation[]   @relation("InvitationUser")
+  sentInvitations  Invitation[]   @relation("InvitationInvitedBy")
+  uploadOperations UploadOperation[]
+  folderOperations FolderOperation[]
+
+  @@unique([entraTenantId, entraObjectId])
+  @@index([status])
+  @@index([companyId])
+  @@map("users")
+}
+
+model Session {
+  id               String     @id @default(uuid()) @db.Uuid
+  /// SHA-256 del token de la cookie. El token en claro nunca se almacena.
+  tokenHash        String     @unique @map("token_hash")
+  csrfToken        String     @map("csrf_token")
+  userId           String     @map("user_id") @db.Uuid
+  user             User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  authMethod       AuthMethod @map("auth_method")
+  /// Clave de partición de la caché MSAL (homeAccountId).
+  msalPartitionKey String?    @map("msal_partition_key")
+  ipAddress        String?    @map("ip_address")
+  userAgent        String?    @map("user_agent")
+  createdAt        DateTime   @default(now()) @map("created_at")
+  lastSeenAt       DateTime   @default(now()) @map("last_seen_at")
+  expiresAt        DateTime   @map("expires_at")
+  revokedAt        DateTime?  @map("revoked_at")
+  revokedReason    String?    @map("revoked_reason")
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+/// Caché de tokens MSAL cifrada (AES-256-GCM). Nunca se expone al navegador.
+model TokenCache {
+  partitionKey String   @id @map("partition_key")
+  userId       String?  @map("user_id") @db.Uuid
+  payload      String
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@map("token_caches")
+}
+
+model AccessRequest {
+  id                   String              @id @default(uuid()) @db.Uuid
+  fullName             String              @map("full_name")
+  companyName          String              @map("company_name")
+  email                String
+  requestedProject     String              @map("requested_project")
+  justification        String?
+  status               AccessRequestStatus @default(PENDING)
+  reviewNotes          String?             @map("review_notes")
+  infoRequestedMessage String?             @map("info_requested_message")
+  /// Respuesta del solicitante a una petición de información adicional.
+  additionalInfo       String?             @map("additional_info")
+  /// SHA-256 del código de seguimiento entregado al solicitante (nunca en claro).
+  trackingCodeHash     String              @unique @map("tracking_code_hash")
+  reviewedById         String?             @map("reviewed_by_id") @db.Uuid
+  reviewedAt           DateTime?           @map("reviewed_at")
+  resultingUserId      String?             @map("resulting_user_id") @db.Uuid
+  ipAddress            String?             @map("ip_address")
+  createdAt            DateTime            @default(now()) @map("created_at")
+  updatedAt            DateTime            @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@index([email])
+  @@map("access_requests")
+}
+
+model Invitation {
+  id                  String           @id @default(uuid()) @db.Uuid
+  userId              String           @map("user_id") @db.Uuid
+  user                User             @relation("InvitationUser", fields: [userId], references: [id], onDelete: Cascade)
+  invitedById         String           @map("invited_by_id") @db.Uuid
+  invitedBy           User             @relation("InvitationInvitedBy", fields: [invitedById], references: [id])
+  invitedEmail        String           @map("invited_email")
+  status              InvitationStatus
+  redirectUrl         String           @map("redirect_url")
+  sendMessage         Boolean          @default(true) @map("send_message")
+  graphInvitationId   String?          @map("graph_invitation_id")
+  invitedUserObjectId String?          @map("invited_user_object_id")
+  invitedUserType     String?          @map("invited_user_type")
+  errorCode           String?          @map("error_code")
+  errorMessage        String?          @map("error_message")
+  createdAt           DateTime         @default(now()) @map("created_at")
+  redeemedAt          DateTime?        @map("redeemed_at")
+
+  @@index([userId])
+  @@map("invitations")
+}
+
+// ───────────────────────────── Proyectos y ubicaciones ─────────────────────────────
+
+model Project {
+  id               String            @id @default(uuid()) @db.Uuid
+  code             String            @unique
+  name             String
+  description      String?
+  status           ProjectStatus     @default(ACTIVE)
+  createdById      String?           @map("created_by_id") @db.Uuid
+  createdAt        DateTime          @default(now()) @map("created_at")
+  updatedAt        DateTime          @updatedAt @map("updated_at")
+  members          UserProject[]
+  locations        ProjectLocation[]
+  uploadOperations UploadOperation[]
+  folderOperations FolderOperation[]
+
+  @@map("projects")
+}
+
+model UserProject {
+  userId      String   @map("user_id") @db.Uuid
+  user        User     @relation("UserProjectUser", fields: [userId], references: [id], onDelete: Cascade)
+  projectId   String   @map("project_id") @db.Uuid
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  grantedById String?  @map("granted_by_id") @db.Uuid
+  grantedBy   User?    @relation("UserProjectGrantedBy", fields: [grantedById], references: [id], onDelete: SetNull)
+  grantedAt   DateTime @default(now()) @map("granted_at")
+
+  @@id([userId, projectId])
+  @@index([projectId])
+  @@map("user_projects")
+}
+
+/// Carpeta raíz de SharePoint que contiene las etapas (Inicio/Ejecución/Cierre)
+/// de un proyecto. companyId = NULL → ubicación compartida por todos los
+/// contratistas del proyecto; con companyId → ubicación específica de esa empresa
+/// (estructura "Empresa / Proyecto / Etapas"). Identificadores obtenidos de Graph.
+model ProjectLocation {
+  id           String               @id @default(uuid()) @db.Uuid
+  projectId    String               @map("project_id") @db.Uuid
+  project      Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  companyId    String?              @map("company_id") @db.Uuid
+  company      Company?             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  siteId       String               @map("site_id")
+  driveId      String               @map("drive_id")
+  rootItemId   String               @map("root_item_id")
+  rootName     String               @map("root_name")
+  rootPath     String               @map("root_path")
+  webUrl       String?              @map("web_url")
+  verifiedAt   DateTime?            @map("verified_at")
+  createdById  String?              @map("created_by_id") @db.Uuid
+  createdAt    DateTime             @default(now()) @map("created_at")
+  updatedAt    DateTime             @updatedAt @map("updated_at")
+  stageFolders ProjectStageFolder[]
+
+  @@index([projectId])
+  @@map("project_locations")
+}
+
+model ProjectStageFolder {
+  id          String          @id @default(uuid()) @db.Uuid
+  locationId  String          @map("location_id") @db.Uuid
+  location    ProjectLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  stageKey    String          @map("stage_key")
+  driveItemId String          @map("drive_item_id")
+  name        String
+  path        String
+  verifiedAt  DateTime        @default(now()) @map("verified_at")
+
+  @@unique([locationId, stageKey])
+  @@map("project_stage_folders")
+}
+
+// ───────────────────────────── Operaciones documentales ─────────────────────────────
+
+model FolderOperation {
+  id           String              @id @default(uuid()) @db.Uuid
+  type         FolderOperationType
+  result       OperationResult
+  userId       String              @map("user_id") @db.Uuid
+  user         User                @relation(fields: [userId], references: [id])
+  projectId    String              @map("project_id") @db.Uuid
+  project      Project             @relation(fields: [projectId], references: [id])
+  locationId   String?             @map("location_id") @db.Uuid
+  stageKey     String?             @map("stage_key")
+  driveId      String              @map("drive_id")
+  parentItemId String?             @map("parent_item_id")
+  driveItemId  String?             @map("drive_item_id")
+  name         String
+  previousName String?             @map("previous_name")
+  path         String
+  errorCode    String?             @map("error_code")
+  errorMessage String?             @map("error_message")
+  environment  DataEnvironment
+  createdAt    DateTime            @default(now()) @map("created_at")
+
+  @@index([projectId, createdAt])
+  @@index([userId, createdAt])
+  @@index([driveItemId])
+  @@map("folder_operations")
+}
+
+model UploadOperation {
+  id             String                @id @default(uuid()) @db.Uuid
+  userId         String                @map("user_id") @db.Uuid
+  user           User                  @relation(fields: [userId], references: [id])
+  projectId      String                @map("project_id") @db.Uuid
+  project        Project               @relation(fields: [projectId], references: [id])
+  locationId     String                @map("location_id") @db.Uuid
+  stageKey       String                @map("stage_key")
+  driveId        String                @map("drive_id")
+  folderItemId   String                @map("folder_item_id")
+  folderPath     String                @map("folder_path")
+  status         UploadOperationStatus @default(PENDING)
+  totalFiles     Int                   @map("total_files")
+  successCount   Int                   @default(0) @map("success_count")
+  errorCount     Int                   @default(0) @map("error_count")
+  cancelledCount Int                   @default(0) @map("cancelled_count")
+  environment    DataEnvironment
+  ipAddress      String?               @map("ip_address")
+  createdAt      DateTime              @default(now()) @map("created_at")
+  completedAt    DateTime?             @map("completed_at")
+  files          UploadedFile[]
+
+  @@index([userId, createdAt])
+  @@index([projectId, createdAt])
+  @@index([status])
+  @@map("upload_operations")
+}
+
+model UploadedFile {
+  id                  String           @id @default(uuid()) @db.Uuid
+  operationId         String           @map("operation_id") @db.Uuid
+  operation           UploadOperation  @relation(fields: [operationId], references: [id], onDelete: Cascade)
+  originalName        String           @map("original_name")
+  finalName           String           @map("final_name")
+  extension           String
+  mimeType            String?          @map("mime_type")
+  size                BigInt
+  status              UploadFileStatus @default(PENDING)
+  conflictBehavior    ConflictBehavior @default(FAIL) @map("conflict_behavior")
+  bytesUploaded       BigInt           @default(0) @map("bytes_uploaded")
+  /// URL de sesión de carga de Graph, cifrada. Es una credencial: no se expone.
+  uploadSessionEnc    String?          @map("upload_session_enc")
+  uploadSessionExpiry DateTime?        @map("upload_session_expiry")
+  driveItemId         String?          @map("drive_item_id")
+  webUrl              String?          @map("web_url")
+  eTag                String?          @map("e_tag")
+  verifiedAt          DateTime?        @map("verified_at")
+  attempts            Int              @default(0)
+  errorCode           String?          @map("error_code")
+  errorMessage        String?          @map("error_message")
+  startedAt           DateTime?        @map("started_at")
+  lastActivityAt      DateTime?        @map("last_activity_at")
+  completedAt         DateTime?        @map("completed_at")
+  createdAt           DateTime         @default(now()) @map("created_at")
+
+  @@index([operationId])
+  @@index([status])
+  @@map("uploaded_files")
+}
+
+// ───────────────────────────── Auditoría y configuración ─────────────────────────────
+
+/// Registro de auditoría. Inmutable: un trigger de PostgreSQL impide UPDATE/DELETE.
+/// Sin claves foráneas: conserva una instantánea aunque cambien los registros origen.
+model AuditLog {
+  id           BigInt          @id @default(autoincrement())
+  occurredAt   DateTime        @default(now()) @map("occurred_at")
+  actorUserId  String?         @map("actor_user_id") @db.Uuid
+  actorEmail   String?         @map("actor_email")
+  actorName    String?         @map("actor_name")
+  actorCompany String?         @map("actor_company")
+  actorRole    String?         @map("actor_role")
+  action       String
+  category     String
+  result       AuditResult
+  projectId    String?         @map("project_id") @db.Uuid
+  projectCode  String?         @map("project_code")
+  targetType   String?         @map("target_type")
+  targetId     String?         @map("target_id")
+  documentName String?         @map("document_name")
+  folderPath   String?         @map("folder_path")
+  ipAddress    String?         @map("ip_address")
+  userAgent    String?         @map("user_agent")
+  details      Json?
+  environment  DataEnvironment
+
+  @@index([occurredAt])
+  @@index([actorUserId, occurredAt])
+  @@index([category, occurredAt])
+  @@index([projectId, occurredAt])
+  @@map("audit_logs")
+}
+
+model SystemSetting {
+  key         String   @id
+  value       Json
+  updatedById String?  @map("updated_by_id") @db.Uuid
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("system_settings")
+}
+
+// ───────────────────────────── Solo modo demostración ─────────────────────────────
+
+/// Biblioteca documental local que emula una unidad SharePoint en MODO DEMOSTRACIÓN.
+/// El contenido de los archivos se guarda en disco (DEMO_STORAGE_DIR), no en la BD.
+/// En modo producción esta tabla no se utiliza.
+model DemoDriveItem {
+  id            String    @id
+  driveId       String    @map("drive_id")
+  parentId      String?   @map("parent_id")
+  name          String
+  nameLower     String    @map("name_lower")
+  isFolder      Boolean   @map("is_folder")
+  size          BigInt    @default(0)
+  mimeType      String?   @map("mime_type")
+  createdByName String    @map("created_by_name")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  modifiedAt    DateTime  @default(now()) @map("modified_at")
+
+  @@unique([parentId, nameLower])
+  @@index([driveId])
+  @@map("demo_drive_items")
+}
+
+model DemoUploadSession {
+  id            String   @id
+  driveId       String   @map("drive_id")
+  parentId      String   @map("parent_id")
+  name          String
+  size          BigInt
+  received      BigInt   @default(0)
+  replace       Boolean  @default(false)
+  createdByName String   @map("created_by_name")
+  expiresAt     DateTime @map("expires_at")
+
+  @@map("demo_upload_sessions")
+}

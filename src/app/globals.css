@@ -1,0 +1,111 @@
+@import "tailwindcss";
+
+/*
+ * Sistema de diseño — Portal de Gestión Documental
+ * Lenguaje visual sobrio de software empresarial: neutros, azul corporativo oscuro
+ * como color principal, azul de acción, y colores de estado reservados a su significado.
+ */
+
+@theme {
+  --font-sans: "IBM Plex Sans Variable", "IBM Plex Sans", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  /* Marca: azul corporativo oscuro */
+  --color-brand-950: #081629;
+  --color-brand-900: #0c2340;
+  --color-brand-800: #10305a;
+  --color-brand-700: #123b6d;
+  --color-brand-600: #1b4d8a;
+  --color-brand-100: #dfe7f2;
+  --color-brand-50: #f1f5fa;
+
+  /* Acción: azul secundario para botones y enlaces */
+  --color-action-700: #174a96;
+  --color-action-600: #1f5fbf;
+  --color-action-500: #3a76cf;
+  --color-action-100: #dbe7f8;
+  --color-action-50: #eef4fc;
+
+  /* Neutros */
+  --color-ink-950: #0f141a;
+  --color-ink-900: #1a2028;
+  --color-ink-800: #2b323c;
+  --color-ink-700: #444c57;
+  --color-ink-600: #5b6470;
+  --color-ink-500: #737c88;
+  --color-ink-400: #9aa2ad;
+  --color-ink-300: #c3c9d1;
+  --color-line: #dfe3e8;
+  --color-line-strong: #cbd1d8;
+  --color-canvas: #f4f6f8;
+  --color-subtle: #f9fafb;
+  --color-surface: #ffffff;
+
+  /* Estados (uso exclusivo para su significado) */
+  --color-success-800: #155c3b;
+  --color-success-700: #1b7a4e;
+  --color-success-100: #d6efe1;
+  --color-success-50: #ecf7f1;
+  --color-danger-800: #8f1d14;
+  --color-danger-700: #b42318;
+  --color-danger-100: #fbdcd8;
+  --color-danger-50: #fdf0ee;
+  --color-warning-800: #8a3a06;
+  --color-warning-700: #b54708;
+  --color-warning-100: #fde7c7;
+  --color-warning-50: #fef6e9;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+
+  --shadow-xs: 0 1px 1px rgb(16 24 40 / 0.04);
+  --shadow-sm: 0 1px 2px rgb(16 24 40 / 0.06), 0 1px 1px rgb(16 24 40 / 0.03);
+  --shadow-overlay: 0 12px 32px -8px rgb(16 24 40 / 0.22), 0 2px 6px rgb(16 24 40 / 0.06);
+
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    @apply bg-canvas text-ink-900 font-sans antialiased;
+    font-size: 0.875rem;
+    line-height: 1.45rem;
+    font-feature-settings: "ss01" 0, "tnum" 0;
+  }
+  h1, h2, h3, h4 {
+    @apply text-ink-950;
+    letter-spacing: -0.005em;
+  }
+  ::selection {
+    background: var(--color-action-100);
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-action-600);
+    outline-offset: 2px;
+  }
+  [data-numeric] {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  .path-text {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    line-height: 1.25rem;
+    word-break: break-word;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
